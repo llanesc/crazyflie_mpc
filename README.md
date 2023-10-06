@@ -1,1 +1,12 @@
 # crazyflie_mpc
+This is a ROS2 package for running multiple crazyflies with MPC.
+
+# Dependencies
+## Acados 
+Acados can be installed by following their [documentation](https://docs.acados.org/installation/index.html).
+
+## ROS2 Galactic
+ROS2 Galactic can be found [here](https://docs.ros.org/en/galactic/Installation.html).
+
+## Crazyswarm2 
+We use a modified version of Crazyswarm2 with attitude control. The repository can be found [here](https://github.com/llanesc/crazyswarm2/tree/sitl).
