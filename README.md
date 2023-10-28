@@ -1,5 +1,5 @@
 # crazyflie_mpc
-This is a ROS 2 package for running multiple crazyflies with MPC.
+This is a ROS 2 package for controlling multiple crazyflies with model predictive control (MPC).
 
 # Dependencies
 ## Acados 
