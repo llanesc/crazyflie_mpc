@@ -8,27 +8,25 @@ from time import sleep, time
 from pathlib import Path
 import importlib
 import sys
-import os
 
 class QuadrotorMpcTrajectory:
-    def __init__(self, name: str, generate_c_code, quadrotor: Quadrotor, horizon: float, num_steps: int,  solution_callback):
-        # super(QuadrotorMPC, self).__init__(target=self.solve_mpc_control, args=(x0, xr))
+    def __init__(self, name: str, quadrotor: Quadrotor, horizon: float, num_steps: int, code_export_directory : Path=Path('acados_generated_files'), solution_callback=None):
         self.model_name = name
         self.quad = quadrotor
         self.horizon = horizon
         self.num_steps = num_steps
         self.solution_callback = solution_callback
         self.ocp_solver = None
-        self.acados_generated_files_path = Path(__file__).parent.parent.resolve() / 'acados_generated_files'
-        if generate_c_code:
+        # self.acados_generated_files_path = Path(__file__).parent.resolve() / 'acados_generated_files'
+        self.acados_generated_files_path = code_export_directory
+        try:
+            if self.acados_generated_files_path.is_dir():
+                sys.path.append(str(self.acados_generated_files_path))
+            acados_ocp_solver_pyx = importlib.import_module('c_generated_code.acados_ocp_solver_pyx')
+            self.ocp_solver = acados_ocp_solver_pyx.AcadosOcpSolverCython(self.model_name, 'SQP', self.num_steps)
+        except ImportError:
+            print('Acados cython code not generated. Generating cython code now...')
             self.generate_mpc()
-        else:
-            try:
-                sys.path.append(str(self.acados_generated_files_path / (self.model_name + '_c_generated_code')))
-                acados_ocp_solver_pyx = importlib.import_module('acados_ocp_solver_pyx')
-                self.ocp_solver = acados_ocp_solver_pyx.AcadosOcpSolverCython(self.model_name, 'SQP', self.num_steps)
-            except ImportError:
-                self.generate_mpc()
     def generate_mpc(self):
         f_expl, x, u = self.quad.dynamics()
         # Define the Acados model 
@@ -40,10 +38,9 @@ class QuadrotorMpcTrajectory:
 
         # Define the optimal control problem
         ocp = AcadosOcp()
-        # ocp.code_export_directory = "quadrotor_mpc/c_generated_code"
         ocp.model = model
 
-        ocp.code_export_directory = self.acados_generated_files_path / (self.model_name + '_c_generated_code')
+        ocp.code_export_directory = self.acados_generated_files_path / ('c_generated_code')
         nx = model.x.size()[0] # number of states
         nu = model.u.size()[0] # number of controls
         ny = nx + nu - 1 # size of intermediate cost reference vector in least squares objective
@@ -74,7 +71,6 @@ class QuadrotorMpcTrajectory:
         # xref = vertcat(pxr, pyr, pzr, vxr, vyr, vzr)
         # yref = vertcat(xref,uref)
 
-
         # ocp.model.cost_expr_ext_cost = 0.5 * (y - yref).T @ W @ (y - yref)
         ocp.model.cost_expr_ext_cost_e = 0.
   
@@ -88,7 +84,7 @@ class QuadrotorMpcTrajectory:
         # initial state
         ocp.constraints.x0 = np.zeros(9)
 
-        json_file = str(self.acados_generated_files_path / (self.model_name + '_acados_ocp.json'))
+        json_file = str(self.acados_generated_files_path / ('acados_ocp.json'))
         # solver options
         ocp.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'
         ocp.solver_options.hessian_approx = 'GAUSS_NEWTON'
@@ -98,10 +94,12 @@ class QuadrotorMpcTrajectory:
 
         AcadosOcpSolver.generate(ocp, json_file=json_file)
         AcadosOcpSolver.build(ocp.code_export_directory, with_cython=True)
-        sys.path.append(str(self.acados_generated_files_path / (self.model_name + '_c_generated_code')))
-        acados_ocp_solver_pyx = importlib.import_module('acados_ocp_solver_pyx')
+
+        if self.acados_generated_files_path.is_dir():
+            sys.path.append(str(self.acados_generated_files_path))
+        acados_ocp_solver_pyx = importlib.import_module('c_generated_code.acados_ocp_solver_pyx')
         self.ocp_solver = acados_ocp_solver_pyx.AcadosOcpSolverCython(self.model_name, 'SQP', self.num_steps)
-        # self.ocp_solver = AcadosOcpSolver.create_cython_solver(json_file=json_file)
+
 
     def solve_mpc_trajectory(self, x0, yref):
         N = self.num_steps
@@ -118,7 +116,7 @@ class QuadrotorMpcTrajectory:
         u_mpc = np.zeros((N, nu))
         self.ocp_solver.set(0, 'lbx', x0)
         self.ocp_solver.set(0, 'ubx', x0)
-        start_time = time()
+        # start_time = time()
         status = self.ocp_solver.solve()
         # print(time() - start_time)
 
@@ -148,7 +146,7 @@ class QuadrotorMpcTrajectory:
         u_mpc = np.zeros((N, nu))
         self.ocp_solver.set(0, 'lbx', x0)
         self.ocp_solver.set(0, 'ubx', x0)
-        start_time = time()
+        # start_time = time()
         status = self.ocp_solver.solve()
         # print(time() - start_time)
 

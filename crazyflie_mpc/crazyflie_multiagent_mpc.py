@@ -10,29 +10,28 @@ import rclpy.node
 from .quadrotor2 import Quadrotor
 from .quadrotor_mpc_trajectory import QuadrotorMpcTrajectory
 
-from crazyflie_interfaces.msg import LogDataGeneric, FullState, AttitudeSetpoint, Hover
-from crazyflie_interfaces.srv import Takeoff, Land
-
-from nav_msgs.msg import Odometry, Path
-from geometry_msgs.msg import PoseStamped, Pose
-from std_msgs.msg import Empty
+from crazyflie_interfaces.msg import LogDataGeneric, AttitudeSetpoint
 
 import pathlib
 
-from threading import Thread
+from nav_msgs.msg import Odometry, Path
+from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Empty
+
 from time import time
 
 from rclpy import executors
-# from rclpy.action import ActionServer
-from rclpy import duration
 
 from rclpy.qos import qos_profile_sensor_data
 
-# import argparse
+import argparse
+
+from ament_index_python.packages import get_package_share_directory
+
 
 class CrazyflieMPC(rclpy.node.Node):
-    def __init__(self, mpc_N, mpc_horizon, rate):
-        super().__init__("cf_1")
+    def __init__(self, node_name, mpc_N, mpc_horizon, rate):
+        super().__init__(node_name)
         # super(CrazyflieMPC, self).__init__(target=self._start_agent)
         # self._swarm = swarm
         # self.time_helper = self._swarm.timeHelper
@@ -64,7 +63,8 @@ class CrazyflieMPC(rclpy.node.Node):
         self.land_duration = 2.0
 
         quadrotor = Quadrotor(mass=0.027,arm_length=0.044, Ixx=2.3951e-5, Iyy=2.3951e-5, Izz=3.2347e-5, cm=2.4e-6, tau=0.08)
-        self.mpc_solver = QuadrotorMpcTrajectory('crazyflie', False, quadrotor, mpc_horizon, mpc_N, None)
+        self.acados_c_generated_code_path = pathlib.Path(get_package_share_directory('crazyflie_mpc')).resolve() / 'acados_generated_files'
+        self.mpc_solver = QuadrotorMpcTrajectory('crazyflie', quadrotor, mpc_horizon, mpc_N, code_export_directory=self.acados_c_generated_code_path)
         self.get_logger().info('Initialization completed...')
 
         self.is_flying = False
@@ -272,24 +272,28 @@ class CrazyflieMPC(rclpy.node.Node):
                                     thrust)
 
 def main():
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument("-n","--name",help ="Show Output",default='cf21_2',type=str)
-    # args = parser.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-n","--n_agents",help ="Number of agents",default=1,type=int)
+    args = parser.parse_args()
+    N_AGENTS = args.n_agents
 
     rclpy.init()
     mpc_tf = 3.0
     mpc_N = 20
     rate = 50
-    quad1 = CrazyflieMPC(mpc_N, mpc_tf, rate)
-    rclpy.spin(quad1)
-    # quad2 = CrazyflieMPC('cf21_2', mpc_N, mpc_tf, rate)
-    # executor = executors.MultiThreadedExecutor()
-    # executor.add_node(quad1)
-    # executor.add_node(quad2)
-    # executor.spin()
-    
-    quad1.destroy_node()
-    # quad2.destroy_node()
+    nodes = [CrazyflieMPC('cf_'+str(i), mpc_N, mpc_tf, rate) for i in np.arange(1, 1 + N_AGENTS)]
+    executor = executors.MultiThreadedExecutor()
+    for node in nodes:
+        executor.add_node(node)
+    try:
+        while rclpy.ok():
+            node.get_logger().info('Beginning multiagent executor, shut down with CTRL-C')
+            executor.spin()
+    except KeyboardInterrupt:
+        node.get_logger().info('Keyboard interrupt, shutting down.\n')
+
+    for node in nodes:
+        node.destroy_node()
     rclpy.shutdown()
 
 
