@@ -20,9 +20,9 @@ class Quadrotor:
         cyaw = cos(rpy[2])
         syaw = sin(rpy[2])
         Rotm = np.array([
-            [cpitch*cyaw, sroll*spitch*cyaw + croll*syaw, croll*spitch*cyaw - sroll*syaw],
-            [-cpitch*syaw, sroll*spitch*syaw - croll*cyaw, croll*spitch*syaw + sroll*cyaw],
-            [spitch, -sroll*cpitch, croll*cpitch]]
+            [cpitch*cyaw, sroll*spitch*cyaw - croll*syaw, croll*spitch*cyaw + sroll*syaw],
+            [cpitch*syaw, sroll*spitch*syaw + croll*cyaw, croll*spitch*syaw - sroll*cyaw],
+            [-spitch, sroll*cpitch, croll*cpitch]]
         )
         return Rotm
     
@@ -54,15 +54,15 @@ class Quadrotor:
         syaw = sin(yaw)
         # Define rotation matrix from quadrotor body to inertial reference frames
         Rotm = vertcat(
-            horzcat(cpitch*cyaw, sroll*spitch*cyaw + croll*syaw, croll*spitch*cyaw - sroll*syaw),
-            horzcat(-cpitch*syaw, sroll*spitch*syaw - croll*cyaw, croll*spitch*syaw + sroll*cyaw),
-            horzcat(spitch, -sroll*cpitch, croll*cpitch)
+            horzcat(cpitch*cyaw, sroll*spitch*cyaw - croll*syaw, croll*spitch*cyaw + sroll*syaw),
+            horzcat(cpitch*syaw, sroll*spitch*syaw + croll*cyaw, croll*spitch*syaw - sroll*cyaw),
+            horzcat(-spitch, sroll*cpitch, croll*cpitch)
         )
         
         f_vec = vertcat(0., 0., thrust)
 
         # velocity dynamics
-        vdot = -self.gravity*vertcat(0.,0.,1.) + Rotm.T @ f_vec / self.mass
+        vdot = -self.gravity*vertcat(0.,0.,1.) + Rotm @ f_vec / self.mass
 
         # Setup explicit ode equations
         pxdot = vx
