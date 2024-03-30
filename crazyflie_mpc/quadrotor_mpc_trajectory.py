@@ -43,8 +43,8 @@ class QuadrotorMpcTrajectory:
         ocp.code_export_directory = self.acados_generated_files_path / ('c_generated_code')
         nx = model.x.size()[0] # number of states
         nu = model.u.size()[0] # number of controls
-        ny = nx + nu - 1 # size of intermediate cost reference vector in least squares objective
-        ny_e = nx - 1 # size of terminal reference vector
+        ny = nx + nu  # size of intermediate cost reference vector in least squares objective
+        ny_e = nx # size of terminal reference vector
 
         N = self.num_steps
         Tf = self.horizon
@@ -56,16 +56,16 @@ class QuadrotorMpcTrajectory:
         # uref = self.quad.mass*self.quad.gravity*vertcat(0.0,0.0,0.0,1.0)
         # Intermediate cost coditions\
   
-        Q = np.diag([50., 50., 50., 10., 10., 10., 5., 5., 5.])
+        Q = np.diag([50., 50., 50., 1., 1., 1., 5., 5., 5.])
         R = diag(horzcat(5., 5., 5., 1.))
-        W = block_diag(Q)
+        W = block_diag(Q,R)
 
         ocp.cost.cost_type = 'LINEAR_LS'
         ocp.cost.cost_type_e = 'EXTERNAL'
-        ocp.cost.Vx = np.concatenate([np.diag([1.,1.,1.,1.,1.,1.,1.,1.,1.])],axis=1)
-        ocp.cost.Vu = np.zeros((9, 4))
+        ocp.cost.Vx = np.vstack([np.identity(9), np.zeros((4,9))])
+        ocp.cost.Vu = np.vstack([np.zeros((9, 4)),np.identity(4)])
         ocp.cost.W = W
-        ocp.cost.yref = np.zeros(9)
+        ocp.cost.yref = np.zeros(13)
 
         # y = vertcat(x[:-1], u)
         # xref = vertcat(pxr, pyr, pzr, vxr, vyr, vzr)

@@ -57,12 +57,15 @@ class CrazyflieMPC(rclpy.node.Node):
 
         self.flight_mode = 'idle'
         self.trajectory_t0 = self.get_clock().now()
-        self.trajectory_type = 'tilted_circle'
+        self.trajectory_type = 'lemniscate'
 
         self.takeoff_duration = 2.0
         self.land_duration = 2.0
 
-        quadrotor = Quadrotor(mass=0.027,arm_length=0.044, Ixx=2.3951e-5, Iyy=2.3951e-5, Izz=3.2347e-5, cm=2.4e-6, tau=0.08)
+        self.m = 0.027
+        self.g = 9.80665
+
+        quadrotor = Quadrotor(mass=self.m,arm_length=0.044, Ixx=2.3951e-5, Iyy=2.3951e-5, Izz=3.2347e-5, cm=2.4e-6, tau=0.08)
         self.acados_c_generated_code_path = pathlib.Path(get_package_share_directory('crazyflie_mpc')).resolve() / 'acados_generated_files'
         self.mpc_solver = QuadrotorMpcTrajectory('crazyflie', quadrotor, mpc_horizon, mpc_N, code_export_directory=self.acados_c_generated_code_path)
         self.get_logger().info('Initialization completed...')
@@ -192,22 +195,23 @@ class CrazyflieMPC(rclpy.node.Node):
             else:
                 pzr = self.trajectory_start_position[2] + helix_velocity*T_end
                 vzr = 0.0
-        return np.array([pxr,pyr,pzr,vxr,vyr,vzr,0.,0.,0.])
+        return np.array([pxr,pyr,pzr,vxr,vyr,vzr,0.,0.,0.,*np.array([0., 0., 0., self.g*self.m])])
 
     def navigator(self, t):
+        hover_control = np.array([0., 0., 0., self.g*self.m])
         if self.flight_mode == 'takeoff':
             t_mpc_array = np.linspace(t, self.mpc_horizon + t, self.mpc_N)
-            yref = np.array([np.array([*((self.go_to_position - self.trajectory_start_position)*(1./(1. + np.exp(-(12.0 * (t_mpc - self.takeoff_duration) / self.takeoff_duration + 6.0)))) + self.trajectory_start_position),0.,0.,0.,0.,0.,0.]) for t_mpc in t_mpc_array]).T
+            yref = np.array([np.array([*((self.go_to_position - self.trajectory_start_position)*(1./(1. + np.exp(-(12.0 * (t_mpc - self.takeoff_duration) / self.takeoff_duration + 6.0)))) + self.trajectory_start_position),0.,0.,0.,0.,0.,0.,*hover_control]) for t_mpc in t_mpc_array]).T
             # yref = np.repeat(np.array([[*self.go_to_position,0,0,0]]).T, self.mpc_N, axis=1)
         elif self.flight_mode == 'land':
             t_mpc_array = np.linspace(t, self.mpc_horizon + t, self.mpc_N)
-            yref = np.array([np.array([*((self.go_to_position - self.trajectory_start_position)*(1./(1. + np.exp(-(12.0 * (t_mpc - self.land_duration) / self.land_duration + 6.0)))) + self.trajectory_start_position),0.,0.,0.,0.,0.,0.]) for t_mpc in t_mpc_array]).T
+            yref = np.array([np.array([*((self.go_to_position - self.trajectory_start_position)*(1./(1. + np.exp(-(12.0 * (t_mpc - self.land_duration) / self.land_duration + 6.0)))) + self.trajectory_start_position),0.,0.,0.,0.,0.,0.,*hover_control]) for t_mpc in t_mpc_array]).T
             # yref = np.repeat(np.array([[*self.go_to_position,0,0,0]]).T, self.mpc_N, axis=1)
         elif self.flight_mode == 'trajectory':
             t_mpc_array = np.linspace(t, self.mpc_horizon + t, self.mpc_N)
             yref = np.array([self.trajectory_function(t_mpc) for t_mpc in t_mpc_array]).T
         elif self.flight_mode == 'hover':
-            yref = np.repeat(np.array([[*self.go_to_position,0.,0.,0.,0.,0.,0.]]).T, self.mpc_N, axis=1)
+            yref = np.repeat(np.array([[*self.go_to_position,0.,0.,0.,0.,0.,0.,*hover_control]]).T, self.mpc_N, axis=1)
         return yref
     
     def cmd_attitude_setpoint(self, roll, pitch, yaw_rate, thrust):
@@ -222,7 +226,7 @@ class CrazyflieMPC(rclpy.node.Node):
         if self.flight_mode == 'idle':
             return
 
-        if not self.position or not  self.velocity or not self.attitude:
+        if not self.position or not self.velocity or not self.attitude:
             self.get_logger().warning("Empty state message.")
             return
         
@@ -295,7 +299,6 @@ def main():
     for node in nodes:
         node.destroy_node()
     rclpy.shutdown()
-
 
 if __name__ == '__main__':
    main()
