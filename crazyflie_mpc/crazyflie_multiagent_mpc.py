@@ -7,8 +7,8 @@ from crazyflie_py import *
 import rclpy
 import rclpy.node
 
-from .quadrotor2 import Quadrotor
-from .quadrotor_mpc_trajectory import QuadrotorMpcTrajectory
+from .quadrotor_simplified_model import Quadrotor
+from .trajectory_tracking_mpc import QuadrotorMpcTrajectory
 
 from crazyflie_interfaces.msg import LogDataGeneric, AttitudeSetpoint
 
@@ -19,15 +19,20 @@ from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Empty
 
 from time import time
-
 from rclpy import executors
-
 from rclpy.qos import qos_profile_sensor_data
 
 import argparse
 
 from ament_index_python.packages import get_package_share_directory
 
+import tf_transformations
+
+from enum import Enum
+
+class Motors(Enum):
+    MOTOR_CLASSIC = 1 # https://store.bitcraze.io/products/4-x-7-mm-dc-motor-pack-for-crazyflie-2 w/ standard props
+    MOTOR_UPGRADE = 2 # https://store.bitcraze.io/collections/bundles/products/thrust-upgrade-bundle-for-crazyflie-2-x
 
 class CrazyflieMPC(rclpy.node.Node):
     def __init__(self, node_name, mpc_N, mpc_horizon, rate):
@@ -58,14 +63,17 @@ class CrazyflieMPC(rclpy.node.Node):
         self.flight_mode = 'idle'
         self.trajectory_t0 = self.get_clock().now()
         self.trajectory_type = 'lemniscate'
+        
+        # TODO: Switch to parameters yaml?
+        self.motors = Motors.MOTOR_UPGRADE # MOTOR_CLASSIC, MOTOR_UPGRADE
 
         self.takeoff_duration = 2.0
         self.land_duration = 2.0
 
-        self.m = 0.027
+        self.m = 0.028
         self.g = 9.80665
 
-        quadrotor = Quadrotor(mass=self.m,arm_length=0.044, Ixx=2.3951e-5, Iyy=2.3951e-5, Izz=3.2347e-5, cm=2.4e-6, tau=0.08)
+        quadrotor = Quadrotor(mass=self.m, arm_length=0.044, Ixx=2.3951e-5, Iyy=2.3951e-5, Izz=3.2347e-5, cm=2.4e-6, tau=0.08)
         self.acados_c_generated_code_path = pathlib.Path(get_package_share_directory('crazyflie_mpc')).resolve() / 'acados_generated_files'
         self.mpc_solver = QuadrotorMpcTrajectory('crazyflie', quadrotor, mpc_horizon, mpc_N, code_export_directory=self.acados_c_generated_code_path)
         self.get_logger().info('Initialization completed...')
@@ -75,19 +83,13 @@ class CrazyflieMPC(rclpy.node.Node):
         self.create_subscription(
             PoseStamped,
             f'{prefix}/pose',
-            self._position_msg_callback,
+            self._pose_msg_callback,
             10)
         
         self.create_subscription(
             LogDataGeneric,
             f'{prefix}/velocity',
             self._velocity_msg_callback,
-            10)
-        
-        self.create_subscription(
-            LogDataGeneric,
-            f'{prefix}/attitude',
-            self._attitude_msg_callback,
             10)
         
         self.mpc_solution_path_pub = self.create_publisher(
@@ -107,15 +109,15 @@ class CrazyflieMPC(rclpy.node.Node):
 
         self.create_timer(1/rate, self._main_loop)
 
-    def _position_msg_callback(self, msg: PoseStamped):
+    def _pose_msg_callback(self, msg: PoseStamped):
         self.position = [msg.pose.position.x, msg.pose.position.y, msg.pose.position.z]
-        # self.get_logger().info(f'{self.position}')
+        self.attitude = tf_transformations.euler_from_quaternion([msg.pose.orientation.x,
+                                                                  msg.pose.orientation.y,
+                                                                  msg.pose.orientation.z,
+                                                                  msg.pose.orientation.w])
 
     def _velocity_msg_callback(self, msg: LogDataGeneric):
         self.velocity = msg.values
-
-    def _attitude_msg_callback(self, msg: LogDataGeneric):
-        self.attitude = msg.values
 
     def start_trajectory(self, msg):
         self.trajectory_changed = True
@@ -214,13 +216,21 @@ class CrazyflieMPC(rclpy.node.Node):
             yref = np.repeat(np.array([[*self.go_to_position,0.,0.,0.,0.,0.,0.,*hover_control]]).T, self.mpc_N, axis=1)
         return yref
     
-    def cmd_attitude_setpoint(self, roll, pitch, yaw_rate, thrust):
+    def cmd_attitude_setpoint(self, roll, pitch, yaw_rate, thrust_pwm):
         setpoint = AttitudeSetpoint()
         setpoint.roll = roll
         setpoint.pitch = pitch
         setpoint.yaw_rate = yaw_rate
-        setpoint.thrust = thrust
+        setpoint.thrust = thrust_pwm
         self.attitude_setpoint_pub.publish(setpoint)
+
+    def thrust_to_pwm(self, collective_thrust: float) -> int:
+        # omega_per_rotor = 7460.8*np.sqrt((collective_thrust / 4.0))
+        # pwm_per_rotor = 24.5307*(omega_per_rotor - 380.8359)
+        if self.motors == Motors.MOTOR_CLASSIC:
+            return int(max(min(24.5307*(7460.8*np.sqrt((collective_thrust / 4.0)) - 380.8359), 65535),0))
+        elif self.motors == Motors.MOTOR_UPGRADE:
+            return int(max(min(24.5307*(6462.1*np.sqrt((collective_thrust / 4.0)) - 380.8359), 65535),0))
 
     def _main_loop(self):
         if self.flight_mode == 'idle':
@@ -249,12 +259,11 @@ class CrazyflieMPC(rclpy.node.Node):
             *rpy_rad
         ])
 
-        # self.get_logger().info(np.array2string(x0))
-
         yref = self.navigator(t)
         status, x_mpc, u_mpc = self.mpc_solver.solve_mpc_trajectory(x0, yref)
         
-        thrust = int(min(1.77*u_mpc[0, 3] / 9.80665 * 1000 * 1000, 60000))
+        # thrust = int(min(1.77*u_mpc[0, 3] / 9.80665 * 1000 * 1000, 60000))
+        thrust_pwm = self.thrust_to_pwm(u_mpc[0, 3])
 
         mpc_solution_path = Path()
         mpc_solution_path.header.frame_id = 'world'
@@ -273,7 +282,7 @@ class CrazyflieMPC(rclpy.node.Node):
         self.cmd_attitude_setpoint(np.degrees(u_mpc[0,0]), 
                                     np.degrees(u_mpc[0,1]), 
                                     0.0, 
-                                    thrust)
+                                    thrust_pwm)
 
 def main():
     parser = argparse.ArgumentParser()
