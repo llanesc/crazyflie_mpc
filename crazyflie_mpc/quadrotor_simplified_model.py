@@ -1,7 +1,7 @@
 from casadi import SX, vertcat, horzcat, diag, inv_minor, cross, sqrt, cos, sin
 import numpy as np
 
-class Quadrotor:
+class QuadrotorSimplified:
     def __init__(self, mass, arm_length, Ixx, Iyy, Izz, cm, tau, gravity=9.80665):
         self.mass = mass
         self.gravity = gravity
@@ -11,6 +11,7 @@ class Quadrotor:
         self.Izz = Izz
         self.cm = cm
         self.tau = tau
+    
     @staticmethod
     def euler_to_rotm(rpy):
         cpitch = cos(rpy[1])
@@ -40,7 +41,6 @@ class Quadrotor:
         pitch_c = SX.sym('pitch_c')
         yaw_c = SX.sym('yaw_c')
         thrust = SX.sym('thrust')
-        # t = SX.sym('t')
 
         # Setup state and control vectors
         x = vertcat(px,py,pz,vx,vy,vz,roll,pitch,yaw)
@@ -62,7 +62,7 @@ class Quadrotor:
         f_vec = vertcat(0., 0., thrust)
 
         # velocity dynamics
-        vdot = -self.gravity*vertcat(0.,0.,1.) + Rotm @ f_vec / self.mass
+        vdot = vertcat(0.,0.,-self.gravity) + Rotm @ f_vec / self.mass
 
         # Setup explicit ode equations
         pxdot = vx
