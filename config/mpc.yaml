@@ -1,0 +1,15 @@
+n_agents: 1
+build_acados: False
+drone_properties:
+  mass: 0.028
+  Ixx: 2.3951e-5
+  Iyy: 2.3951e-5
+  Izz: 3.2347e-5
+  cm: 2.4e-6
+  attitude_time_constant: 0.08
+  arm_length: 0.044
+mpc:
+  horizon: 1.0
+  num_steps: 50
+  control_update_rate: 50
+  plot_trajectory: True

@@ -1,53 +1,35 @@
-import sys
-import logging 
-import numpy as np
-import rowan
-
-from crazyflie_py import *
-import rclpy
-import rclpy.node
+import os
 
 from .quadrotor_simplified_model import QuadrotorSimplified
 from .trajectory_tracking_mpc import TrajectoryTrackingMpc
 
+import rclpy
+import rclpy.node
+from rclpy import executors
+from crazyflie_py import *
+
+from ament_index_python.packages import get_package_share_directory
 from crazyflie_interfaces.msg import LogDataGeneric, AttitudeSetpoint
-
-import pathlib
-
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Empty
-
-from time import time
-from rclpy import executors
-from rclpy.qos import qos_profile_sensor_data
-
-import argparse
-
-from ament_index_python.packages import get_package_share_directory
-
 import tf_transformations
 
+import pathlib
 from enum import Enum
 from copy import copy
-import time
 from collections import deque
-from threading import Thread
+import numpy as np
+import yaml
 
 class Motors(Enum):
     MOTOR_CLASSIC = 1 # https://store.bitcraze.io/products/4-x-7-mm-dc-motor-pack-for-crazyflie-2 w/ standard props
     MOTOR_UPGRADE = 2 # https://store.bitcraze.io/collections/bundles/products/thrust-upgrade-bundle-for-crazyflie-2-x
 
 class CrazyflieMPC(rclpy.node.Node):
-    def __init__(self, node_name: str, mpc_solver: TrajectoryTrackingMpc, quadrotor_dynamics: QuadrotorSimplified, mpc_N: int, mpc_tf: float, rate: int, plot_trajectory: bool = False):
-        super().__init__(node_name)
-        # super(CrazyflieMPC, self).__init__(target=self._start_agent)
-        # self._swarm = swarm
-        # self.time_helper = self._swarm.timeHelper
-        # self.cfserver = self._swarm.allcfs
-        # self._cf = self.cfserver.crazyfliesByName[name]
-        name = self.get_name()
-        prefix = '/' + name
+    def __init__(self, cf_name: str, mpc_solver: TrajectoryTrackingMpc, quadrotor_dynamics: QuadrotorSimplified, mpc_N: int, mpc_tf: float, rate: int, plot_trajectory: bool = False):
+        super().__init__(node_name='crazyflie_mpc', namespace=cf_name)
+        prefix = '/' + cf_name
         
         self.is_connected = True
 
@@ -69,7 +51,7 @@ class CrazyflieMPC(rclpy.node.Node):
         self.trajectory_type = 'lemniscate'
         
         # TODO: Switch to parameters yaml?
-        self.motors = Motors.MOTOR_CLASSIC # MOTOR_CLASSIC, MOTOR_UPGRADE
+        self.motors = Motors.MOTOR_UPGRADE # MOTOR_CLASSIC, MOTOR_UPGRADE
 
         self.takeoff_duration = 5.0
         self.land_duration = 5.0
@@ -103,7 +85,7 @@ class CrazyflieMPC(rclpy.node.Node):
         
         self.attitude_setpoint_pub = self.create_publisher(
             AttitudeSetpoint,
-            f'{prefix}/cmd_attitude_setpoint',
+            f'{prefix}/cmd_attitude',
             10)
         
         self.takeoffService = self.create_subscription(Empty, f'/all/mpc_takeoff', self.takeoff, 10)
@@ -120,12 +102,7 @@ class CrazyflieMPC(rclpy.node.Node):
         self.attitude = tf_transformations.euler_from_quaternion([msg.pose.orientation.x,
                                                                   msg.pose.orientation.y,
                                                                   msg.pose.orientation.z,
-                                                                  msg.pose.orientation.w])
-        # print(f'attitude: {np.degrees(self.attitude[2])}')
-        if self.attitude[2] > np.pi:
-            self.attitude[2] -= 2*np.pi
-        elif self.attitude[2] < -np.pi:
-            self.attitude[2] += 2*np.pi
+                                                                  msg.pose.orientation.w], axes='rxyz')
 
     def _velocity_msg_callback(self, msg: LogDataGeneric):
         self.velocity = msg.values
@@ -296,43 +273,49 @@ class CrazyflieMPC(rclpy.node.Node):
         if self.control_queue is not None:
             control = self.control_queue.popleft()
             thrust_pwm = self.thrust_to_pwm(control[3])
-            yawrate = 3.*(np.degrees(self.attitude[2]))
-            self.cmd_attitude_setpoint(np.degrees(control[0]), 
-                                    np.degrees(control[1]), 
-                                    yawrate, 
-                                    thrust_pwm)
+            yawrate = -3.*(self.attitude[2])
+            self.cmd_attitude_setpoint(control[0], 
+                                       control[1], 
+                                       yawrate, 
+                                       thrust_pwm)
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("-n","--n_agents",help ="Number of agents",default=1,type=int)
-    parser.add_argument("--build_acados", help="Build acados", action='store_true')
-    args = parser.parse_args()
-    N_AGENTS = args.n_agents
-    build_acados = args.build_acados
+    crazyflie_mpc_config_yaml = os.path.join(
+        get_package_share_directory('crazyflie_mpc'),
+        'config',
+        'mpc.yaml')
+    
+    with open(crazyflie_mpc_config_yaml, 'r') as file:
+        crazyflie_mpc_config = yaml.safe_load(file)
+    
+    n_agents = crazyflie_mpc_config['n_agents']
+    build_acados = crazyflie_mpc_config['build_acados']
 
     rclpy.init()
 
     # Quadrotor Parameters
-    mass = 0.028
-    arm_length=0.044
-    Ixx=2.3951e-5
-    Iyy=2.3951e-5
-    Izz=3.2347e-5
-    cm=2.4e-6
-    tau=0.08
+    mass = crazyflie_mpc_config['drone_properties']['mass']
+    arm_length = crazyflie_mpc_config['drone_properties']['arm_length']
+    Ixx = crazyflie_mpc_config['drone_properties']['Ixx']
+    Iyy = crazyflie_mpc_config['drone_properties']['Iyy']
+    Izz = crazyflie_mpc_config['drone_properties']['Izz']
+    cm = crazyflie_mpc_config['drone_properties']['cm']
+    tau = crazyflie_mpc_config['drone_properties']['attitude_time_constant']
 
     # MPC Parameters
-    mpc_tf = 1.0
-    mpc_N = 50
-    control_update_rate = 50
-    plot_trajectory = True
+    mpc_tf = crazyflie_mpc_config['mpc']['horizon']
+    mpc_N = crazyflie_mpc_config['mpc']['num_steps']
+    control_update_rate = crazyflie_mpc_config['mpc']['control_update_rate']
+    plot_trajectory = crazyflie_mpc_config['mpc']['plot_trajectory']
+
+    print(f'mass: {mass}, arm_length: {arm_length}, Ixx: {Ixx}, Iyy: {Iyy}, Izz: {Izz}, cm: {cm}, tau: {tau}, mpc_tf: {mpc_tf}, mpc_N: {mpc_N}, control_update_rate: {control_update_rate}, plot_trajectory: {plot_trajectory}')
 
     quadrotor_dynamics = QuadrotorSimplified(mass, arm_length, Ixx, Iyy, Izz, cm, tau)
     acados_c_generated_code_path = pathlib.Path(get_package_share_directory('crazyflie_mpc')).resolve() / 'acados_generated_files'
     mpc_solver = TrajectoryTrackingMpc('crazyflie', quadrotor_dynamics, mpc_tf, mpc_N, code_export_directory=acados_c_generated_code_path)
     if build_acados:
         mpc_solver.generate_mpc()
-    nodes = [CrazyflieMPC('cf_'+str(i), mpc_solver, quadrotor_dynamics, mpc_N, mpc_tf, control_update_rate, plot_trajectory) for i in np.arange(1, 1 + N_AGENTS)]
+    nodes = [CrazyflieMPC('cf_'+str(i), mpc_solver, quadrotor_dynamics, mpc_N, mpc_tf, control_update_rate, plot_trajectory) for i in np.arange(1, 1 + n_agents)]
     executor = executors.MultiThreadedExecutor()
     for node in nodes:
         executor.add_node(node)
